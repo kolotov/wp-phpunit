@@ -1,0 +1,111 @@
+FROM docker.io/library/ubuntu:24.04
+
+ARG RUNTIME_REVISION=local
+LABEL org.opencontainers.image.source="https://github.com/kolotov/wp-phpunit" \
+      org.opencontainers.image.revision="$RUNTIME_REVISION"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+COPY containers/phpunit13/runtime.env /tmp/wp-phpunit-runtime.env
+COPY containers/phpunit13/runtime.env /usr/local/share/wp-phpunit/runtime.env
+
+RUN set -eux; \
+    . /tmp/wp-phpunit-runtime.env; \
+    test "$(. /etc/os-release && printf '%s' "$VERSION_ID")" = "$UBUNTU_VERSION"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        gnupg \
+        locales \
+        rsync \
+        software-properties-common \
+        tzdata \
+        unzip; \
+    add-apt-repository -y ppa:ondrej/php; \
+    NODE_MAJOR="${NODE_VERSION%%.*}"; \
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ghostscript \
+        imagemagick \
+        libheif-plugin-aomenc \
+        libmemcached-dev \
+        libssl-dev \
+        "nodejs=${NODE_VERSION}-1nodesource1" \
+        php-pear \
+        zlib1g-dev \
+        "php${PHP_MINOR}-cli" \
+        "php${PHP_MINOR}-common" \
+        "php${PHP_MINOR}-curl" \
+        "php${PHP_MINOR}-dev" \
+        "php${PHP_MINOR}-fpm" \
+        "php${PHP_MINOR}-gd" \
+        "php${PHP_MINOR}-imagick" \
+        "php${PHP_MINOR}-intl" \
+        "php${PHP_MINOR}-mbstring" \
+        "php${PHP_MINOR}-mysql" \
+        "php${PHP_MINOR}-readline" \
+        "php${PHP_MINOR}-xml" \
+        "php${PHP_MINOR}-xdebug" \
+        "php${PHP_MINOR}-zip"; \
+    curl -fsSL "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar" -o /usr/local/bin/composer; \
+    printf '%s  %s\n' "$COMPOSER_SHA256" /usr/local/bin/composer | sha256sum -c -; \
+    chmod +x /usr/local/bin/composer; \
+    npm install --global "npm@${NPM_VERSION}"; \
+    printf '\n' | pecl install "memcached-${MEMCACHED_EXTENSION_VERSION}"; \
+    printf '\n' | pecl install "timezonedb-${TIMEZONEDB_VERSION}"; \
+    printf '\n' | pecl install "pcov-${PCOV_VERSION}"; \
+    echo 'extension=memcached.so' > "/etc/php/${PHP_MINOR}/mods-available/memcached.ini"; \
+    echo 'extension=timezonedb.so' > "/etc/php/${PHP_MINOR}/mods-available/timezonedb.ini"; \
+    echo 'extension=pcov.so' > "/etc/php/${PHP_MINOR}/mods-available/pcov.ini"; \
+    phpenmod -v "$PHP_MINOR" -s ALL memcached timezonedb pcov; \
+    rm -rf /var/lib/apt/lists/* /tmp/pear; \
+    test "$(php -r 'echo PHP_VERSION;')" = "$PHP_VERSION"; \
+    test "$(php -r 'echo phpversion("imagick");')" = "$IMAGICK_VERSION"; \
+    test "$(convert -version | awk 'NR == 1 { print $3 }')" = "$IMAGEMAGICK_VERSION"; \
+    test "$(gs --version)" = "$GHOSTSCRIPT_VERSION"; \
+    test "$(php -r 'echo phpversion("xdebug");')" = "$XDEBUG_VERSION"; \
+    test "$(php -r 'echo phpversion("memcached");')" = "$MEMCACHED_EXTENSION_VERSION"; \
+    test "$(php -r 'echo timezone_version_get();')" = "$TIMEZONEDB_VERSION"; \
+    test "$(php -r 'echo phpversion("pcov");')" = "$PCOV_VERSION"; \
+    php -r 'foreach (["mysqli", "imagick", "memcached", "gd", "intl", "mbstring", "xmlwriter", "zip", "timezonedb", "pcov", "xdebug"] as $extension) { if (! extension_loaded($extension)) { fwrite(STDERR, "Missing PHP extension: {$extension}\n"); exit(1); } }'; \
+    test "$(node --version)" = "v${NODE_VERSION}"; \
+    test "$(npm --version)" = "$NPM_VERSION"; \
+    test "$(composer --version --no-ansi | awk 'NR == 1 { print $3 }')" = "$COMPOSER_VERSION"; \
+    php -v | head -n 1; \
+    node --version; \
+    npm --version; \
+    gs --version; \
+    convert -version | head -n 2
+
+RUN set -eux; \
+    . /tmp/wp-phpunit-runtime.env; \
+    groupadd wp_php; \
+    useradd --gid wp_php --home-dir /var/www --no-create-home --shell /usr/sbin/nologin wp_php; \
+    sed -ri 's/^user = .*/user = wp_php/; s/^group = .*/group = wp_php/; s#^listen = .*#listen = 9000#' "/etc/php/${PHP_MINOR}/fpm/pool.d/www.conf"; \
+    mkdir -p /run/php /usr/local/etc/php/conf.d /var/www; \
+    printf '%s\n' '#!/bin/sh' "exec /usr/sbin/php-fpm${PHP_MINOR} -F \"\$@\"" > /usr/local/sbin/php-fpm; \
+    chmod +x /usr/local/sbin/php-fpm; \
+    phpdismod -v "$PHP_MINOR" -s ALL xdebug memcached pcov; \
+    test "$(php -r 'echo extension_loaded("xdebug") ? "yes" : "no";')" = "no"; \
+    test "$(php -r 'echo extension_loaded("memcached") ? "yes" : "no";')" = "no"; \
+    test "$(php -r 'echo extension_loaded("pcov") ? "yes" : "no";')" = "no"; \
+    test "$(php -r 'echo extension_loaded("igbinary") ? "yes" : "no";')" = "no"; \
+    test "$(php -r 'echo extension_loaded("msgpack") ? "yes" : "no";')" = "no"; \
+    php -d zend_extension=xdebug.so -r 'if (! extension_loaded("xdebug")) { exit(1); }'
+
+COPY --chmod=755 containers/phpunit13/entrypoint.sh /usr/local/bin/phpunit13-entrypoint
+
+ENV WP_PHPUNIT_CONTAINERIZED=1 \
+    WORDPRESS_PHPUNIT_CONTAINERIZED=1 \
+    LOCAL_PHP_XDEBUG=false \
+    LOCAL_PHP_MEMCACHED=false \
+    LOCAL_PHP_PCOV=false \
+    XDEBUG_MODE=off
+
+ENTRYPOINT ["/usr/local/bin/phpunit13-entrypoint"]
+CMD ["php-fpm"]
+WORKDIR /var/www

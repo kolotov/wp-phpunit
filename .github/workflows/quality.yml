@@ -1,0 +1,48 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CONTAINER_ENGINE: docker
+  RUNTIME_IMAGE: ghcr.io/kolotov/wp-phpunit-runtime:${{ github.sha }}
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Build canonical runtime once
+        run: |
+          docker build --pull \
+            --build-arg "RUNTIME_REVISION=$GITHUB_SHA" \
+            --tag "$RUNTIME_IMAGE" \
+            --file containers/phpunit13/Containerfile \
+            .
+
+      - name: Run package quality in the built runtime
+        env:
+          WP_PHPUNIT_SKIP_BUILD: true
+          WP_PHPUNIT_TEST_IMAGE: ${{ env.RUNTIME_IMAGE }}
+        run: ./tools/run-containerized.sh quality
+
+      - name: Log in to GitHub Container Registry
+        if: ${{ github.event_name == 'push' && github.repository == 'kolotov/wp-phpunit' }}
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Publish tested runtime image
+        if: ${{ github.event_name == 'push' && github.repository == 'kolotov/wp-phpunit' }}
+        run: |
+          docker push "$RUNTIME_IMAGE"
+          docker image inspect "$RUNTIME_IMAGE" --format '{{json .RepoDigests}}'
